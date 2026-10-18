@@ -1,0 +1,1 @@
+ALTER TABLE "Etudiant" ADD COLUMN "photoUrl" TEXT;
