@@ -3,8 +3,13 @@ import { z } from "zod"
 import { OfficeParser } from "officeparser"
 
 import { auth } from "@/lib/auth"
+import { Prisma } from "@/lib/generated/prisma/client"
 import { prisma } from "@/lib/prisma"
-import { hasStudentDirectoryAccess } from "@/lib/student-access"
+import {
+  hasStudentDirectoryAccess,
+  isAdmin,
+  isDirectoryEmailAllowed,
+} from "@/lib/student-access"
 
 const studentStopWords = new Set([
   "avec", "dans", "des", "du", "elle", "est", "etudiant", "etudiants",
@@ -28,13 +33,16 @@ const personLookupPattern =
   /\b(cherche|recherche|trouve|retrouve|montre|affiche|voir)\b.*\b(un certain|une certaine|nomme|nommee|qui s'appelle|qui s’appelle|individu|personne)\b/i
 const studentFollowUpPattern =
   /\b(pas recu|pas recus|pas recue|pas recues|je ne les ai pas|je les ai pas|je n'ai rien recu|je n’ai rien recu|ou sont les liens|les liens ne|renvoie les|renvoyez les)\b/i
+const groupCodePattern = /\b[\p{L}]{2,}\d{2,}\b/iu
 
 function isStudentSearchRequest(question: string) {
   const normalized = question
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
   return (
-    studentSearchPattern.test(normalized) || personLookupPattern.test(normalized)
+    studentSearchPattern.test(normalized) ||
+    personLookupPattern.test(normalized) ||
+    groupCodePattern.test(normalized)
   )
 }
 
@@ -47,9 +55,19 @@ const acceptedAttachmentTypes = [
   "text/plain",
   "text/markdown",
   "text/csv",
+  "text/html",
+  "text/x-tex",
+  "application/x-tex",
+  "application/rtf",
+  "text/rtf",
+  "application/epub+zip",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.presentation",
+  "application/vnd.oasis.opendocument.graphics",
 ] as const
 
 function getStudentSearchTerms(query: string) {
@@ -64,13 +82,15 @@ function getStudentSearchTerms(query: string) {
     .slice(0, 8)
 }
 
-function getStudentTermFilter(term: string) {
-  return {
-    OR: [
+function getStudentTermFilter(term: string, allowPrivateFields: boolean) {
+  const fields: Prisma.EtudiantWhereInput[] = [
+    { nomComplet: { contains: term, mode: "insensitive" } },
+    { nom: { contains: term, mode: "insensitive" } },
+    { prenom: { contains: term, mode: "insensitive" } },
+  ]
+  if (allowPrivateFields) {
+    fields.push(
       { id: { contains: term, mode: "insensitive" as const } },
-      { nomComplet: { contains: term, mode: "insensitive" as const } },
-      { nom: { contains: term, mode: "insensitive" as const } },
-      { prenom: { contains: term, mode: "insensitive" as const } },
       { cin: { contains: term, mode: "insensitive" as const } },
       { cef: { contains: term, mode: "insensitive" as const } },
       { sexe: { contains: term, mode: "insensitive" as const } },
@@ -88,8 +108,9 @@ function getStudentTermFilter(term: string) {
           is: { nom: { contains: term, mode: "insensitive" as const } },
         },
       },
-    ],
+    )
   }
+  return { OR: fields }
 }
 
 async function getAttachmentText(attachment: {
@@ -103,7 +124,13 @@ async function getAttachmentText(attachment: {
     return new TextDecoder().decode(buffer).slice(0, 30000)
   }
 
-  const ast = await OfficeParser.parseOffice(buffer)
+  const ast = await OfficeParser.parseOffice(buffer, {
+    extractAttachments: true,
+    ocr: process.env.DOCUMENT_OCR_ENABLED === "true",
+    ocrConfig: {
+      language: process.env.DOCUMENT_OCR_LANGUAGE ?? "fra+ara+eng",
+    },
+  })
   return (await ast.to("text")).value.slice(0, 30000)
 }
 
@@ -186,8 +213,12 @@ export async function POST(request: Request) {
       studentSearchQuestion
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, ""),
-    )
-  const hasDirectoryAccess = hasStudentDirectoryAccess(session.user.email)
+    ) || groupCodePattern.test(studentSearchQuestion)
+  const hasDirectoryAccess = await hasStudentDirectoryAccess(
+    session.user.id,
+    session.user.email,
+    session.user.emailVerified,
+  )
   if (isStudentSearch && !hasDirectoryAccess) {
     return Response.json(
       {
@@ -197,6 +228,13 @@ export async function POST(request: Request) {
       { status: 403 },
     )
   }
+  const hasFullProfileAccess =
+    isDirectoryEmailAllowed(session.user.email, session.user.emailVerified) ||
+    (await isAdmin(
+      session.user.id,
+      session.user.email,
+      session.user.emailVerified,
+    ))
 
   const totalAttachmentBytes = parsed.data.attachments.reduce(
     (total, attachment) =>
@@ -223,9 +261,10 @@ export async function POST(request: Request) {
   let students: {
     id: string
     name: string
-    filiere: string | null
-    groupe: string | null
-    etablissement: string
+    filiere?: string | null
+    groupe?: string | null
+    etablissement?: string
+    prenom?: string
   }[] = []
 
   try {
@@ -236,33 +275,49 @@ export async function POST(request: Request) {
         nomComplet: true,
         nom: true,
         prenom: true,
-        cin: true,
-        cef: true,
-        sexe: true,
-        dateNaissance: true,
-        nationalite: true,
-        telephone: true,
-        telParents: true,
-        filiere: true,
-        groupe: true,
-        anneeEtude: true,
-        chambre: true,
-        paiement: true,
+        ...(hasFullProfileAccess
+          ? {
+              cin: true,
+              cef: true,
+              sexe: true,
+              dateNaissance: true,
+              nationalite: true,
+              telephone: true,
+              telParents: true,
+              chambre: true,
+              paiement: true,
+            }
+          : {}),
+        ...(hasFullProfileAccess
+          ? {
+              filiere: true,
+              groupe: true,
+              anneeEtude: true,
+            }
+          : {}),
         Etablissement: { select: { nom: true } },
       } as const
 
       let studentRecords = await prisma.etudiant.findMany({
         where: searchTerms.length
-          ? { AND: searchTerms.map(getStudentTermFilter) }
+          ? {
+              AND: searchTerms.map((term) =>
+                getStudentTermFilter(term, hasFullProfileAccess),
+              ),
+            }
           : undefined,
         select: studentSelect,
         orderBy: { nomComplet: "asc" },
-        take: isBulkStudentSearch ? undefined : 8,
+        take: isBulkStudentSearch ? 100 : 8,
       })
 
       if (!isBulkStudentSearch && !studentRecords.length && searchTerms.length > 1) {
         const candidates = await prisma.etudiant.findMany({
-          where: { OR: searchTerms.map(getStudentTermFilter) },
+          where: {
+            OR: searchTerms.map((term) =>
+              getStudentTermFilter(term, hasFullProfileAccess),
+            ),
+          },
           select: studentSelect,
           take: 200,
         })
@@ -280,19 +335,23 @@ export async function POST(request: Request) {
               student.nomComplet,
               student.nom,
               student.prenom,
-              student.cin,
-              student.cef,
-              student.sexe,
-              student.dateNaissance,
-              student.nationalite,
-              student.telephone,
-              student.telParents,
-              student.filiere,
-              student.groupe,
-              student.anneeEtude,
-              student.chambre,
-              student.paiement,
-              student.Etablissement.nom,
+              ...(hasFullProfileAccess
+                ? [
+                    student.cin,
+                    student.cef,
+                    student.sexe,
+                    student.dateNaissance,
+                    student.nationalite,
+                    student.telephone,
+                    student.telParents,
+                    student.filiere,
+                    student.groupe,
+                    student.anneeEtude,
+                    student.chambre,
+                    student.paiement,
+                    student.Etablissement.nom,
+                  ]
+                : []),
             ]
               .filter((value): value is string => Boolean(value))
               .map(normalize)
@@ -315,9 +374,13 @@ export async function POST(request: Request) {
           student.nomComplet ||
           [student.prenom, student.nom].filter(Boolean).join(" ") ||
           "Étudiant",
-        filiere: student.filiere,
-        groupe: student.groupe,
-        etablissement: student.Etablissement.nom,
+        ...(hasFullProfileAccess
+          ? {
+              filiere: student.filiere,
+              groupe: student.groupe,
+              etablissement: student.Etablissement.nom,
+            }
+          : {}),
       }))
       context = students.length
         ? `La recherche autorisée a trouvé ${students.length} dossier(s) correspondant(s). Les liens vers les dossiers correspondants seront ajoutés par l’application. Ne demande pas et ne génère aucun nom ni détail personnel.`
@@ -410,9 +473,29 @@ export async function POST(request: Request) {
   const hasImageAttachments = parsed.data.attachments.some((attachment) =>
     attachment.type.startsWith("image/"),
   )
+  const hasDocumentAttachments = parsed.data.attachments.some(
+    (attachment) => !attachment.type.startsWith("image/"),
+  )
   const model = hasImageAttachments
     ? process.env.GROQ_VISION_MODEL ?? "meta-llama/llama-4-scout-17b-16e-instruct"
-    : process.env.GROQ_MODEL ?? "openai/gpt-oss-120b"
+    : hasDocumentAttachments
+      ? process.env.GROQ_DOCUMENT_MODEL ??
+        process.env.GROQ_MODEL ??
+        "openai/gpt-oss-120b"
+      : process.env.GROQ_MODEL ?? "openai/gpt-oss-120b"
+  const fallbackVisionModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+  const completionPayload = {
+    model,
+    messages: [
+      {
+        role: "system",
+        content: `Tu es l’assistant de CMC Finder. Réponds dans la langue de l’utilisateur, de façon accueillante, claire et utile. Réponds directement aux demandes générales d’aide; ne refuse pas une question générale au seul motif qu’elle pourrait concerner des données personnelles. N’invente pas de dates, de conditions d’admission, de frais ni de formations. Les recherches d’étudiants sont effectuées séparément par l’application, qui vérifie les autorisations et affiche les résultats auxquels l’utilisateur a droit. Tu ne reçois pas les dossiers étudiants: ne fabrique jamais de nom, de résultat ou d’information personnelle et, pour une recherche de dossier, invite à utiliser la liste des étudiants.\n\nContexte :\n${context}`,
+      },
+      ...messages,
+    ],
+    max_tokens: 700,
+    temperature: 0.4,
+  }
 
   let completion: Response
   try {
@@ -422,18 +505,7 @@ export async function POST(request: Request) {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: "system",
-            content: `Tu es l’assistant d’orientation de CMC Finder. Réponds dans la langue de l’utilisateur, clairement et prudemment. N’invente pas de dates, conditions d’admission, frais ou formations. Ne génère pas de noms d’étudiants, ne révèle jamais d’identifiant, CIN, CEF, date de naissance, téléphone, données de paiement ou autre détail personnel. Les noms trouvés seront affichés par l’application sous forme de liens privés. Si aucune correspondance n’existe, ne suggère aucun nom.\n\nContexte :\n${context}`,
-          },
-          ...messages,
-        ],
-        max_tokens: 700,
-        temperature: 0.4,
-      }),
+      body: JSON.stringify(completionPayload),
     })
   } catch {
     return Response.json(
@@ -442,9 +514,38 @@ export async function POST(request: Request) {
     )
   }
 
+  if (
+    hasImageAttachments &&
+    !completion.ok &&
+    model !== fallbackVisionModel
+  ) {
+    try {
+      completion = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...completionPayload,
+          model: fallbackVisionModel,
+        }),
+      })
+    } catch {
+      return Response.json(
+        { error: "Le service d’analyse d’image est injoignable pour le moment." },
+        { status: 502 },
+      )
+    }
+  }
+
   if (!completion.ok) {
     return Response.json(
-      { error: "Groq n’a pas pu traiter votre demande. Vérifiez le modèle et la clé API." },
+      {
+        error: hasImageAttachments
+          ? "La photo n’a pas pu être analysée. Vérifiez GROQ_VISION_MODEL et que votre compte Groq autorise un modèle de vision."
+          : "Groq n’a pas pu traiter votre demande. Vérifiez GROQ_DOCUMENT_MODEL ou GROQ_MODEL et la clé API.",
+      },
       { status: 502 },
     )
   }

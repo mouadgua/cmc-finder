@@ -3,6 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import { useEffect, useState } from "react"
 
 import { NavSecondary } from "@/components/nav-secondary"
 import { NavUser } from "@/components/nav-user"
@@ -23,15 +24,41 @@ import {
 import {
   BellIcon,
   CommandIcon,
+  KeyRoundIcon,
   MessageSquareTextIcon,
   SchoolIcon,
   Settings2Icon,
   CircleHelpIcon,
+  ShieldCheckIcon,
 } from "lucide-react"
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname()
   const { data: session } = authClient.useSession()
+  const [administratorId, setAdministratorId] = useState("")
+  const userId = session?.user.id
+
+  useEffect(() => {
+    if (!userId) return
+
+    const controller = new AbortController()
+    fetch("/api/admin/access", { signal: controller.signal })
+      .then((response) =>
+        response.ok
+          ? (response.json() as Promise<{ isAdmin: boolean }>)
+          : Promise.resolve({ isAdmin: false }),
+      )
+      .then((result) =>
+        setAdministratorId(result.isAdmin ? userId : ""),
+      )
+      .catch(() => {
+        if (!controller.signal.aborted) setAdministratorId("")
+      })
+
+    return () => controller.abort()
+  }, [userId])
+
+  const isAdministrator = Boolean(userId && administratorId === userId)
 
   const navigation = [
     {
@@ -44,6 +71,20 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       url: "/dashboard/etablissements",
       icon: <SchoolIcon aria-hidden="true" />,
     },
+    {
+      title: "Mes tickets",
+      url: "/dashboard/tickets",
+      icon: <KeyRoundIcon aria-hidden="true" />,
+    },
+    ...(isAdministrator
+      ? [
+          {
+            title: "Administration",
+            url: "/dashboard/admin",
+            icon: <ShieldCheckIcon aria-hidden="true" />,
+          },
+        ]
+      : []),
   ]
 
   const secondaryNavigation = [
@@ -99,7 +140,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        <ChatHistory />
+        <React.Suspense
+          fallback={
+            <SidebarGroup className="py-0">
+              <SidebarGroupLabel>Historique des conversations</SidebarGroupLabel>
+            </SidebarGroup>
+          }
+        >
+          <ChatHistory />
+        </React.Suspense>
         <NavSecondary items={secondaryNavigation} className="mt-auto" />
       </SidebarContent>
       <SidebarFooter>

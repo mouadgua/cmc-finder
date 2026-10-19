@@ -10,7 +10,7 @@ export default async function DashboardPage({
 
   return (
     <DashboardShell title="Assistant IA">
-      <main className="flex min-h-[calc(100dvh-var(--header-height))] flex-1 flex-col px-4 md:px-8">
+      <main className="flex h-[calc(100dvh-var(--header-height)-1rem)] min-h-0 flex-1 flex-col overflow-hidden px-4 md:px-8">
         <AssistantChat
           key={session ?? question ?? "new-chat"}
           initialSessionId={session ?? ""}

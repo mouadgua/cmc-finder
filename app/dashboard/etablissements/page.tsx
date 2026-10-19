@@ -2,22 +2,47 @@ import { DashboardShell } from "@/components/dashboard-shell"
 import { EstablishmentsList } from "@/components/establishments-list"
 import { prisma } from "@/lib/prisma"
 
-export default async function EstablishmentsPage() {
+const pageSize = 12
+
+export default async function EstablishmentsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string; page?: string }>
+}) {
+  const params = await searchParams
+  const query = (params.q ?? "").trim().slice(0, 100)
+  const requestedPage = Math.max(1, Number(params.page) || 1)
   let establishments: {
     id: string
     nom: string
     studentCount: number
   }[] = []
+  let total = 0
+  let page = requestedPage
   let databaseUnavailable = false
 
   try {
+    const where = query
+      ? {
+          OR: [
+            { nom: { contains: query, mode: "insensitive" as const } },
+            { id: { contains: query, mode: "insensitive" as const } },
+          ],
+        }
+      : undefined
+    total = await prisma.etablissement.count({ where })
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+    page = Math.min(requestedPage, totalPages)
     const records = await prisma.etablissement.findMany({
+      where,
       select: {
         id: true,
         nom: true,
         _count: { select: { Etudiant: true } },
       },
       orderBy: { nom: "asc" },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
     })
 
     establishments = records.map((record) => ({
@@ -46,6 +71,10 @@ export default async function EstablishmentsPage() {
         <EstablishmentsList
           databaseUnavailable={databaseUnavailable}
           establishments={establishments}
+          page={page}
+          pageSize={pageSize}
+          query={query}
+          total={total}
         />
       </main>
     </DashboardShell>

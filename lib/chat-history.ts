@@ -126,3 +126,14 @@ export function appendChatMessage(
     // Browsers may disable local storage; chat still works without history.
   }
 }
+
+export function deleteChatSession(sessionId: string) {
+  try {
+    const history = readChatHistory(getChatHistorySnapshot())
+    const next = history.filter((session) => session.id !== sessionId)
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(next))
+    window.dispatchEvent(new Event(HISTORY_EVENT))
+  } catch {
+    // Browsers may disable local storage; the rest of the chat still works.
+  }
+}

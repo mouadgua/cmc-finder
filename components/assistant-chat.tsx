@@ -21,6 +21,7 @@ import {
 } from "lucide-react"
 import Image from "next/image"
 import Link from "next/link"
+import { AssistantMessage } from "@/components/assistant-message"
 import { Input } from "@/components/ui/input"
 import {
   appendChatMessage,
@@ -41,10 +42,49 @@ const ACCEPTED_FILE_TYPES = new Set([
   "text/plain",
   "text/markdown",
   "text/csv",
+  "text/html",
+  "text/x-tex",
+  "application/x-tex",
+  "application/rtf",
+  "text/rtf",
+  "application/epub+zip",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.presentation",
+  "application/vnd.oasis.opendocument.graphics",
 ])
+const FILE_TYPES_BY_EXTENSION: Record<string, string> = {
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".odt": "application/vnd.oasis.opendocument.text",
+  ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+  ".odp": "application/vnd.oasis.opendocument.presentation",
+  ".odg": "application/vnd.oasis.opendocument.graphics",
+  ".pdf": "application/pdf",
+  ".rtf": "application/rtf",
+  ".epub": "application/epub+zip",
+  ".tex": "text/x-tex",
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".md": "text/markdown",
+  ".csv": "text/csv",
+  ".txt": "text/plain",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+}
+
+function getAttachmentType(file: File) {
+  if (ACCEPTED_FILE_TYPES.has(file.type)) return file.type
+  const extension = `.${file.name.split(".").pop()?.toLocaleLowerCase() ?? ""}`
+  return FILE_TYPES_BY_EXTENSION[extension] ?? ""
+}
 
 type SelectedAttachment = {
   file: File
@@ -58,9 +98,10 @@ type ChatMessage = {
   students?: {
     id: string
     name: string
-    filiere: string | null
-    groupe: string | null
-    etablissement: string
+    filiere?: string | null
+    groupe?: string | null
+    etablissement?: string
+    anneeEtude?: string | null
   }[]
 }
 
@@ -117,7 +158,7 @@ export function AssistantChat({
     if (selectedFiles.length === 0) return
 
     const acceptedFiles = selectedFiles.filter(
-      (file) => ACCEPTED_FILE_TYPES.has(file.type),
+      (file) => Boolean(getAttachmentType(file)),
     )
     const sizeOkFiles = acceptedFiles.filter((file) => file.size <= MAX_FILE_SIZE)
     const totalSize = attachments.reduce((sum, item) => sum + item.file.size, 0)
@@ -135,14 +176,14 @@ export function AssistantChat({
 
     setError(
       rejected
-        ? "Format non pris en charge. Ajoutez une image, un PDF, un document Word, un tableur ou un fichier texte."
+        ? "Format non pris en charge. Ajoutez une image, un PDF, un document Office/OpenDocument, un fichier texte, HTML, RTF, EPUB ou LaTeX."
         : tooLarge || overLimit
           ? "Limite atteinte : 5 fichiers maximum, 4 Mo par fichier et 8 Mo au total."
           : "",
     )
 
     const newAttachments = withinTotal.map((file) => {
-      const previewUrl = file.type.startsWith("image/")
+      const previewUrl = getAttachmentType(file).startsWith("image/")
         ? URL.createObjectURL(file)
         : undefined
       if (previewUrl) objectUrlsRef.current.add(previewUrl)
@@ -172,7 +213,7 @@ export function AssistantChat({
 
     const messageAttachments = attachments.map(({ file, previewUrl }) => ({
       name: file.name,
-      type: file.type,
+      type: getAttachmentType(file),
       previewUrl,
     }))
     const userMessage = {
@@ -195,10 +236,11 @@ export function AssistantChat({
                 const reader = new FileReader()
                 reader.onload = () => {
                   if (typeof reader.result === "string") {
+                    const type = getAttachmentType(file)
                     resolve({
                       name: file.name,
-                      type: file.type,
-                      data: reader.result,
+                      type,
+                      data: reader.result.replace(/^data:[^,]*,/, `data:${type};base64,`),
                     })
                   } else {
                     reject(new Error("Unable to read file"))
@@ -242,7 +284,7 @@ export function AssistantChat({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
+    <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col overflow-hidden">
       {messages.length === 0 ? (
         <section className="flex flex-1 flex-col items-center justify-center pb-10 text-center">
           <div className="mb-5 flex size-12 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
@@ -277,7 +319,7 @@ export function AssistantChat({
         <section
           aria-label="Conversation avec l’assistant CMC"
           aria-live="polite"
-          className="flex flex-1 flex-col gap-7 overflow-y-auto py-8"
+          className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto overscroll-contain px-1 py-8 pb-40"
         >
           {messages.map((message, index) => (
               <div
@@ -293,9 +335,9 @@ export function AssistantChat({
                   className={`max-w-[88%] ${message.role === "user" ? "rounded-3xl bg-muted px-4 py-3" : "py-2"}`}
                 >
                   {message.content && (
-                    <p className="whitespace-pre-wrap text-sm leading-7">
-                      {message.content}
-                    </p>
+                    message.role === "assistant"
+                      ? <AssistantMessage content={message.content} />
+                      : <p className="whitespace-pre-wrap text-sm leading-7">{message.content}</p>
                   )}
                   {message.attachments && message.attachments.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-2">
@@ -308,6 +350,7 @@ export function AssistantChat({
                             src={attachment.previewUrl}
                             width={80}
                             height={80}
+                            style={{ width: "auto" }}
                             unoptimized
                           />
                         ) : (
@@ -323,24 +366,53 @@ export function AssistantChat({
                     </div>
                   )}
                   {message.students && message.students.length > 0 && (
-                    <div className="mt-4 flex flex-col gap-2">
-                      {message.students.map((student) => (
-                        <Link
-                          className="rounded-lg border px-3 py-2 transition-colors hover:bg-muted"
-                          href={`/dashboard/etudiants/${encodeURIComponent(student.id)}`}
-                          key={student.id}
-                        >
-                          <span className="block text-sm font-medium">
-                            {student.name}
+                    message.students.length === 1 ? (
+                      <Link
+                        className="mt-4 flex items-start gap-3 rounded-xl border p-4 transition-colors hover:bg-muted"
+                        href={`/dashboard/etudiants/${encodeURIComponent(message.students[0].id)}`}
+                      >
+                        <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
+                          <GraduationCapIcon aria-hidden="true" className="size-5" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-semibold">
+                            {message.students[0].name}
                           </span>
                           <span className="mt-1 block text-xs text-muted-foreground">
-                            {[student.filiere, student.groupe, student.etablissement]
-                              .filter(Boolean)
-                              .join(" · ")}
+                            {[
+                              message.students[0].filiere,
+                              message.students[0].groupe,
+                              message.students[0].anneeEtude,
+                              message.students[0].etablissement,
+                            ].filter(Boolean).join(" · ") ||
+                              "Ouvrir la fiche ou demander l’accès"}
                           </span>
-                        </Link>
-                      ))}
-                    </div>
+                          <span className="mt-2 inline-block text-xs font-medium text-emerald-700 dark:text-emerald-300">
+                            Consulter le profil →
+                          </span>
+                        </span>
+                      </Link>
+                    ) : (
+                      <div className="mt-4 flex flex-col gap-2">
+                        {message.students.map((student) => (
+                          <Link
+                            className="rounded-lg border px-3 py-2 transition-colors hover:bg-muted"
+                            href={`/dashboard/etudiants/${encodeURIComponent(student.id)}`}
+                            key={student.id}
+                          >
+                            <span className="block text-sm font-medium">
+                              {student.name}
+                            </span>
+                            <span className="mt-1 block text-xs text-muted-foreground">
+                              {[student.filiere, student.groupe, student.etablissement]
+                                .filter(Boolean)
+                                .join(" · ") ||
+                                "Ouvrir la fiche ou demander l’accès"}
+                            </span>
+                          </Link>
+                        ))}
+                      </div>
+                    )
                   )}
                 </div>
               </div>
@@ -364,7 +436,10 @@ export function AssistantChat({
         </p>
       )}
 
-      <form className="mt-auto pb-3 pt-4" onSubmit={handleSubmit}>
+      <form
+        className="fixed inset-x-4 bottom-0 z-40 mx-auto w-auto max-w-3xl bg-background/95 pb-3 pt-4 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:left-[calc(var(--sidebar-width)+1rem)] md:right-4 md:peer-data-[state=collapsed]:left-[calc(var(--sidebar-width-icon)+1rem)]"
+        onSubmit={handleSubmit}
+      >
         {attachments.length > 0 && (
           <div className="mb-3 flex flex-wrap gap-2">
             {attachments.map((attachment, index) => (
@@ -375,10 +450,11 @@ export function AssistantChat({
                 {attachment.previewUrl ? (
                   <Image
                     alt=""
-                    className="size-12 rounded-lg object-cover"
+                    className="h-12 w-auto max-w-16 rounded-lg object-cover"
                     src={attachment.previewUrl}
                     width={48}
                     height={48}
+                    style={{ width: "auto" }}
                     unoptimized
                   />
                 ) : (
@@ -443,7 +519,7 @@ export function AssistantChat({
                 <ImagePlusIcon aria-hidden="true" className="size-4" />
               </button>
               <input
-                accept=".pdf,.txt,.md,.csv,.docx,.pptx,.xlsx,application/pdf,text/plain,text/markdown,text/csv,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                accept=".pdf,.txt,.md,.csv,.html,.htm,.tex,.rtf,.epub,.docx,.pptx,.xlsx,.odt,.ods,.odp,.odg,application/pdf,text/plain,text/markdown,text/csv,text/html,text/x-tex,application/rtf,application/epub+zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation,application/vnd.oasis.opendocument.graphics"
                 className="sr-only"
                 multiple
                 onChange={addFiles}
