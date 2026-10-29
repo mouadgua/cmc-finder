@@ -36,6 +36,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname()
   const { data: session } = authClient.useSession()
   const [administratorId, setAdministratorId] = useState("")
+  const [unreadNotifications, setUnreadNotifications] = useState(0)
   const userId = session?.user.id
 
   useEffect(() => {
@@ -56,6 +57,30 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       })
 
     return () => controller.abort()
+  }, [userId])
+
+  useEffect(() => {
+    if (!userId) return
+
+    let active = true
+    const refresh = () => {
+      fetch("/api/notifications")
+        .then((response) => (response.ok ? response.json() : null))
+        .then((result: { unreadCount?: number } | null) => {
+          if (active) setUnreadNotifications(result?.unreadCount ?? 0)
+        })
+        .catch((cause: unknown) => {
+          if (active) {
+            console.error("Notification count could not be loaded:", cause)
+          }
+        })
+    }
+    refresh()
+    const interval = window.setInterval(refresh, 30_000)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
   }, [userId])
 
   const isAdministrator = Boolean(userId && administratorId === userId)
@@ -96,7 +121,17 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     {
       title: "Notifications",
       url: "/dashboard/notifications",
-      icon: <BellIcon aria-hidden="true" />,
+      icon: (
+        <span className="relative">
+          <BellIcon aria-hidden="true" />
+          {userId && unreadNotifications > 0 && (
+            <span
+              aria-label={`${unreadNotifications} notification(s) non lue(s)`}
+              className="absolute -right-1 -top-1 size-2 rounded-full bg-destructive"
+            />
+          )}
+        </span>
+      ),
     },
     {
       title: "Support",

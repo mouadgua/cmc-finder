@@ -564,7 +564,7 @@ export function AdminConsole() {
                             id={`message-${user.id}`}
                             maxLength={2000}
                             onChange={(event) => {
-                              const value = event.currentTarget.value
+                              const value = event.target.value
                               setUserMessageDrafts((current) => ({
                                 ...current,
                                 [user.id]: value,

@@ -137,10 +137,16 @@ async function getAttachmentText(attachment: {
 const requestSchema = z.object({
   messages: z
     .array(
-      z.object({
-        role: z.enum(["user", "assistant"]),
-        content: z.string().trim().max(2000),
-      }),
+      z.discriminatedUnion("role", [
+        z.object({
+          role: z.literal("user"),
+          content: z.string().trim().max(2000),
+        }),
+        z.object({
+          role: z.literal("assistant"),
+          content: z.string().trim().max(12000),
+        }),
+      ]),
     )
     .min(1)
     .max(20)
@@ -477,13 +483,13 @@ export async function POST(request: Request) {
     (attachment) => !attachment.type.startsWith("image/"),
   )
   const model = hasImageAttachments
-    ? process.env.GROQ_VISION_MODEL ?? "meta-llama/llama-4-scout-17b-16e-instruct"
+    ? process.env.GROQ_VISION_MODEL ?? "qwen/qwen3.8-27b"
     : hasDocumentAttachments
       ? process.env.GROQ_DOCUMENT_MODEL ??
         process.env.GROQ_MODEL ??
         "openai/gpt-oss-120b"
       : process.env.GROQ_MODEL ?? "openai/gpt-oss-120b"
-  const fallbackVisionModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+  const fallbackVisionModel = "qwen/qwen3.8-27b"
   const completionPayload = {
     model,
     messages: [
@@ -540,11 +546,24 @@ export async function POST(request: Request) {
   }
 
   if (!completion.ok) {
+    let providerMessage = ""
+    try {
+      const providerError = (await completion.clone().json()) as {
+        error?: { message?: string } | string
+      }
+      providerMessage =
+        typeof providerError.error === "string"
+          ? providerError.error
+          : providerError.error?.message ?? ""
+    } catch {
+      providerMessage = ""
+    }
+
     return Response.json(
       {
         error: hasImageAttachments
-          ? "La photo n’a pas pu être analysée. Vérifiez GROQ_VISION_MODEL et que votre compte Groq autorise un modèle de vision."
-          : "Groq n’a pas pu traiter votre demande. Vérifiez GROQ_DOCUMENT_MODEL ou GROQ_MODEL et la clé API.",
+          ? `La photo n’a pas pu être analysée${providerMessage ? ` : ${providerMessage}` : ". Vérifiez GROQ_VISION_MODEL et que votre compte Groq autorise un modèle de vision."}`
+          : `Groq n’a pas pu traiter votre demande${providerMessage ? ` : ${providerMessage}` : ". Vérifiez GROQ_DOCUMENT_MODEL ou GROQ_MODEL et la clé API."}`,
       },
       { status: 502 },
     )
